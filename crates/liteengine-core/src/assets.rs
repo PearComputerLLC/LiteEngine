@@ -13,12 +13,12 @@
 //! in-memory `.litepkg` zip (built by `liteengine build`), so the same code
 //! path serves development and distribution.
 
-use crate::snapshot::TextureData;
+use crate::snapshot::{ModelData, TextureData};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// Where asset bytes come from.
 pub enum Vfs {
@@ -70,6 +70,8 @@ struct Entry {
     last_frame: u64,
     bytes: usize,
     texture: Option<Arc<TextureData>>,
+    /// Decoded triangle mesh (`.obj` / `.glb` / `.gltf` assets).
+    model: Option<Arc<ModelData>>,
 }
 
 /// Statistics snapshot for `stream.stats()`.
@@ -83,15 +85,23 @@ pub struct StreamStats {
     pub loads_completed: u64,
 }
 
-/// The streaming asset store. One background worker decodes textures; the
-/// game thread polls results each frame (single-threaded Lua world stays safe).
+/// Result messages from the background decode worker.
+enum Decoded {
+    Texture(String, TextureData, usize),
+    Model(String, ModelData, usize),
+    Failed(String, String),
+}
+
+/// The streaming asset store. One background worker decodes textures and
+/// triangle meshes; the game thread polls results each frame (the
+/// single-threaded Lua world stays safe).
 pub struct AssetStore {
     vfs: Arc<Vfs>,
     entries: HashMap<String, Entry>,
     budget: usize,
     frame: u64,
     tx: Sender<(String, Vec<u8>)>,
-    rx_done: Receiver<Result<(String, TextureData, usize), (String, String)>>,
+    rx_done: Receiver<Decoded>,
     evictions: Arc<AtomicU64>,
     loads: Arc<AtomicU64>,
 }
@@ -109,6 +119,21 @@ impl AssetStore {
             .name("liteengine-assets".into())
             .spawn(move || {
                 while let Ok((path, bytes)) = rx.recv() {
+                    let lower = path.to_ascii_lowercase();
+                    if lower.ends_with(".obj") || lower.ends_with(".glb") || lower.ends_with(".gltf")
+                    {
+                        match crate::models::decode_model(&path, &bytes) {
+                            Ok(m) => {
+                                let size = m.byte_size();
+                                let _ = tx_done.send(Decoded::Model(path, m, size));
+                                let _ = ld2.fetch_add(1, Ordering::Relaxed);
+                            }
+                            Err(e) => {
+                                let _ = tx_done.send(Decoded::Failed(path, e));
+                            }
+                        }
+                        continue;
+                    }
                     match image::load_from_memory(&bytes) {
                         Ok(img) => {
                             let rgba = img.to_rgba8();
@@ -118,11 +143,11 @@ impl AssetStore {
                                 rgba: rgba.into_raw(),
                             };
                             let size = td.rgba.len();
-                            let _ = tx_done.send(Ok((path, td, size)));
+                            let _ = tx_done.send(Decoded::Texture(path, td, size));
                             let _ = ld2.fetch_add(1, Ordering::Relaxed);
                         }
                         Err(e) => {
-                            let _ = tx_done.send(Err((path, e.to_string())));
+                            let _ = tx_done.send(Decoded::Failed(path, e.to_string()));
                         }
                     }
                 }
@@ -170,6 +195,7 @@ impl AssetStore {
                         last_frame: self.frame,
                         bytes: 0,
                         texture: None,
+                        model: None,
                     },
                 );
             }
@@ -184,10 +210,11 @@ impl AssetStore {
         }
     }
 
-    /// Drop a texture from the resident set (used by `stream.release`).
+    /// Drop a texture/model from the resident set (used by `stream.release`).
     pub fn release(&mut self, path: &str) {
         if let Some(e) = self.entries.get_mut(path) {
             e.texture = None;
+            e.model = None;
             e.state = AssetState::Unloaded;
             e.bytes = 0;
         }
@@ -217,7 +244,7 @@ impl AssetStore {
         self.frame += 1;
         while let Ok(msg) = self.rx_done.try_recv() {
             match msg {
-                Ok((path, td, size)) => {
+                Decoded::Texture(path, td, size) => {
                     if let Some(e) = self.entries.get_mut(&path) {
                         e.state = AssetState::Loaded;
                         e.bytes = size;
@@ -225,7 +252,15 @@ impl AssetStore {
                         e.texture = Some(Arc::new(td));
                     }
                 }
-                Err((path, e)) => {
+                Decoded::Model(path, md, size) => {
+                    if let Some(e) = self.entries.get_mut(&path) {
+                        e.state = AssetState::Loaded;
+                        e.bytes = size;
+                        e.last_frame = self.frame;
+                        e.model = Some(Arc::new(md));
+                    }
+                }
+                Decoded::Failed(path, e) => {
                     eprintln!("[liteengine] failed to decode '{path}': {e}");
                     if let Some(en) = self.entries.get_mut(&path) {
                         en.state = AssetState::Unloaded;
@@ -249,7 +284,7 @@ impl AssetStore {
         let mut order: Vec<(String, u64, u8)> = self
             .entries
             .iter()
-            .filter(|(_, e)| e.texture.is_some())
+            .filter(|(_, e)| e.texture.is_some() || e.model.is_some())
             .map(|(k, e)| (k.clone(), e.last_frame, e.priority))
             .collect();
         order.sort_by_key(|(_, frame, prio)| (*frame, 255u8.saturating_sub(*prio)));
@@ -258,12 +293,18 @@ impl AssetStore {
                 break;
             }
             if let Some(e) = self.entries.get_mut(&path) {
+                let mut evicted = false;
                 if let Some(t) = e.texture.take() {
+                    evicted = true;
+                    let _ = t; // Arc consumers keep rendering safely
+                }
+                if e.model.take().is_some() {
+                    evicted = true;
+                }
+                if evicted {
                     total = total.saturating_sub(e.bytes);
                     e.bytes = 0;
                     e.state = AssetState::Unloaded;
-                    e.texture = None;
-                    let _ = t; // Arc consumers keep rendering safely
                     self.evictions.fetch_add(1, Ordering::Relaxed);
                 }
             }
@@ -281,6 +322,17 @@ impl AssetStore {
         None
     }
 
+    /// Fetch a decoded model mesh; touches the LRU clock.
+    pub fn get_model(&mut self, path: &str) -> Option<Arc<ModelData>> {
+        if let Some(e) = self.entries.get_mut(path) {
+            e.last_frame = self.frame;
+            if let Some(m) = &e.model {
+                return Some(m.clone());
+            }
+        }
+        None
+    }
+
     /// State of one asset.
     pub fn state(&self, path: &str) -> AssetState {
         self.entries.get(path).map(|e| e.state).unwrap_or(AssetState::Unloaded)
@@ -288,7 +340,11 @@ impl AssetStore {
 
     pub fn stats(&self) -> StreamStats {
         StreamStats {
-            loaded: self.entries.values().filter(|e| e.texture.is_some()).count(),
+            loaded: self
+                .entries
+                .values()
+                .filter(|e| e.texture.is_some() || e.model.is_some())
+                .count(),
             loading: self
                 .entries
                 .values()

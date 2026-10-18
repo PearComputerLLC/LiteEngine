@@ -351,6 +351,43 @@ impl UserData for SpriteHandle {
             })
         });
 
+        // ---- 3D model costumes --------------------------------------------
+        m.add_method("set_model", |lua, this, path: String| {
+            with_state_mut(lua, |st| {
+                st.assets.request(&path, 5);
+                if let Some(s) = st.scene.sprite_by_id_mut(this.0) {
+                    s.model = Some(path);
+                    s.in3d = true; // models only make sense in the 3D world
+                }
+                Ok(())
+            })
+        });
+        m.add_method("clear_model", |lua, this, ()| {
+            with_state_mut(lua, |st| {
+                if let Some(s) = st.scene.sprite_by_id_mut(this.0) {
+                    s.model = None;
+                }
+                Ok(())
+            })
+        });
+        m.add_method("set_rotation3d", |lua, this, (x, y, z): (f64, f64, f64)| {
+            with_state_mut(lua, |st| {
+                if let Some(s) = st.scene.sprite_by_id_mut(this.0) {
+                    s.rot3 = Vec3::new(x as f32, y as f32, z as f32);
+                }
+                Ok(())
+            })
+        });
+        m.add_method("rotation3d", |lua, this, ()| {
+            with_state(lua, |st| {
+                Ok(st
+                    .scene
+                    .sprite_by_id(this.0)
+                    .map(|s| (s.rot3.x as f64, s.rot3.y as f64, s.rot3.z as f64))
+                    .unwrap_or((0.0, 0.0, 0.0)))
+            })
+        });
+
         // ---- Sensing ------------------------------------------------------
         m.add_method("touching", |lua, this, other: String| {
             with_state(lua, |st| {
@@ -453,8 +490,13 @@ impl UserData for SpriteHandle {
                         ns.in3d = src.in3d;
                         ns.pos3 = src.pos3;
                         ns.visible = src.visible;
+                        ns.model = src.model.clone();
+                        ns.rot3 = src.rot3;
                         if let Some(c) = &ns.costume {
                             st.assets.request(c, 5);
+                        }
+                        if let Some(m) = &ns.model {
+                            st.assets.request(m, 5);
                         }
                         Ok(Some(ns.id))
                     }
@@ -483,6 +525,10 @@ impl UserData for SpriteHandle {
                         "id" => Value::Integer(s.id as i64),
                         "saying" => match &s.say {
                             Some(say) => Value::String(lua.create_string(&say.message)?),
+                            None => Value::Nil,
+                        },
+                        "model" => match &s.model {
+                            Some(m) => Value::String(lua.create_string(m)?),
                             None => Value::Nil,
                         },
                         _ => Value::Nil,
@@ -1172,6 +1218,7 @@ pub fn register_api(lua: &mlua::Lua) -> EngineResult<()> {
                 st.scene.pbr.meshes.push(PbrMesh {
                     name,
                     mesh: t.get("mesh").unwrap_or_else(|_| "cube".to_string()),
+                    model: None,
                     pos: Vec3::new(pos.x as f32, pos.y as f32, pos.z as f32),
                     rot: Vec3::new(rot.x as f32, rot.y as f32, rot.z as f32),
                     scale: Vec3::new(s as f32, s as f32, s as f32),
@@ -1206,12 +1253,301 @@ pub fn register_api(lua: &mlua::Lua) -> EngineResult<()> {
     )?;
     globals.set("pbr3d", pbr)?;
 
+    // ------------------------------------------------------------------ monitors
+    let mon = lua.create_table()?;
+    mon.set(
+        "show",
+        lua.create_function(|lua, (name, opts): (String, Option<mlua::Table>)| {
+            with_state(lua, |st| require_module(st, "monitors"))?;
+            monitor_apply(lua, &name, opts, false)
+        })?,
+    )?;
+    mon.set(
+        "show_list",
+        lua.create_function(|lua, (name, opts): (String, Option<mlua::Table>)| {
+            with_state(lua, |st| require_module(st, "monitors"))?;
+            monitor_apply(lua, &name, opts, true)
+        })?,
+    )?;
+    mon.set(
+        "hide",
+        lua.create_function(|lua, name: String| {
+            with_state_mut(lua, |st| {
+                require_module(st, "monitors")?;
+                if let Some(m) = st.scene.monitor_by_watch_mut(&name) {
+                    m.visible = false;
+                }
+                Ok(())
+            })
+        })?,
+    )?;
+    mon.set(
+        "remove",
+        lua.create_function(|lua, name: String| {
+            with_state_mut(lua, |st| {
+                require_module(st, "monitors")?;
+                st.scene.remove_monitor(&name);
+                Ok(())
+            })
+        })?,
+    )?;
+    mon.set(
+        "set_position",
+        lua.create_function(|lua, (name, x, y): (String, f64, f64)| {
+            with_state_mut(lua, |st| {
+                require_module(st, "monitors")?;
+                if let Some(m) = st.scene.monitor_by_watch_mut(&name) {
+                    m.x = x as f32;
+                    m.y = y as f32;
+                }
+                Ok(())
+            })
+        })?,
+    )?;
+    mon.set(
+        "set_style",
+        lua.create_function(|lua, (name, style): (String, String)| {
+            with_state_mut(lua, |st| {
+                require_module(st, "monitors")?;
+                if let Some(m) = st.scene.monitor_by_watch_mut(&name) {
+                    m.large = style == "large";
+                }
+                Ok(())
+            })
+        })?,
+    )?;
+    mon.set(
+        "set_list_window",
+        lua.create_function(|lua, (name, offset, rows): (String, f64, Option<f64>)| {
+            with_state_mut(lua, |st| {
+                require_module(st, "monitors")?;
+                if let Some(m) = st.scene.monitor_by_watch_mut(&name) {
+                    m.list_offset = (offset.max(0.0) as usize).min(100_000);
+                    if let Some(r) = rows {
+                        m.list_rows = (r as usize).clamp(1, 24);
+                    }
+                }
+                Ok(())
+            })
+        })?,
+    )?;
+    mon.set(
+        "hide_all",
+        lua.create_function(|lua, ()| {
+            with_state_mut(lua, |st| {
+                require_module(st, "monitors")?;
+                for m in st.scene.monitors.iter_mut() {
+                    m.visible = false;
+                }
+                Ok(())
+            })
+        })?,
+    )?;
+    globals.set("monitors", mon)?;
+
+    // ------------------------------------------------------------------ audio
+    let audio_t = lua.create_table()?;
+    audio_t.set(
+        "available",
+        lua.create_function(|lua, ()| {
+            with_state(lua, |st| {
+                Ok(st.audio.as_ref().map(|a| a.available).unwrap_or(false))
+            })
+        })?,
+    )?;
+    audio_t.set(
+        "play",
+        lua.create_function(|lua, (path, opts): (String, Option<mlua::Table>)| {
+            let mut looped = false;
+            let mut volume = 1.0f64;
+            if let Some(o) = &opts {
+                if let Ok(l) = o.get::<bool>("loop") {
+                    looped = l;
+                }
+                if let Ok(v) = o.get::<f64>("volume") {
+                    volume = v;
+                }
+            }
+            let id = with_state_mut(lua, |st| {
+                require_module(st, "audio")?;
+                let a = st
+                    .audio
+                    .as_mut()
+                    .ok_or_else(|| mlua::Error::runtime("audio not initialized"))?;
+                let id = a.alloc_id();
+                let bytes = std::sync::Arc::new(
+                    st.assets
+                        .vfs()
+                        .read(&path)
+                        .map_err(mlua::Error::external)?,
+                );
+                if !a.available {
+                    crate::runtime::warn_audio_unavailable();
+                    return Ok(id);
+                }
+                a.send(crate::audio::AudioMsg::Play {
+                    id,
+                    bytes,
+                    volume: volume as f32,
+                    looped,
+                });
+                Ok(id)
+            })?;
+            Ok(id)
+        })?,
+    )?;
+    audio_t.set(
+        "play_loop",
+        lua.create_function(|lua, path: String| {
+            let id = with_state_mut(lua, |st| {
+                require_module(st, "audio")?;
+                let a = st
+                    .audio
+                    .as_mut()
+                    .ok_or_else(|| mlua::Error::runtime("audio not initialized"))?;
+                let id = a.alloc_id();
+                let bytes = std::sync::Arc::new(
+                    st.assets
+                        .vfs()
+                        .read(&path)
+                        .map_err(mlua::Error::external)?,
+                );
+                if !a.available {
+                    crate::runtime::warn_audio_unavailable();
+                    return Ok(id);
+                }
+                a.send(crate::audio::AudioMsg::Play {
+                    id,
+                    bytes,
+                    volume: 1.0,
+                    looped: true,
+                });
+                Ok(id)
+            })?;
+            Ok(id)
+        })?,
+    )?;
+    audio_t.set(
+        "stop",
+        lua.create_function(|lua, id: u64| {
+            with_state_mut(lua, |st| {
+                require_module(st, "audio")?;
+                if let Some(a) = st.audio.as_mut() {
+                    a.send(crate::audio::AudioMsg::Stop { id });
+                }
+                Ok(())
+            })
+        })?,
+    )?;
+    audio_t.set(
+        "stop_all",
+        lua.create_function(|lua, ()| {
+            with_state_mut(lua, |st| {
+                require_module(st, "audio")?;
+                if let Some(a) = st.audio.as_mut() {
+                    a.send(crate::audio::AudioMsg::StopAll);
+                }
+                Ok(())
+            })
+        })?,
+    )?;
+    audio_t.set(
+        "set_volume",
+        lua.create_function(|lua, (id, v): (u64, f64)| {
+            with_state_mut(lua, |st| {
+                require_module(st, "audio")?;
+                if let Some(a) = st.audio.as_mut() {
+                    a.send(crate::audio::AudioMsg::SetVolume {
+                        id,
+                        volume: v as f32,
+                    });
+                }
+                Ok(())
+            })
+        })?,
+    )?;
+    audio_t.set(
+        "set_master_volume",
+        lua.create_function(|lua, v: f64| {
+            with_state_mut(lua, |st| {
+                require_module(st, "audio")?;
+                if let Some(a) = st.audio.as_mut() {
+                    a.send(crate::audio::AudioMsg::SetMaster { volume: v as f32 });
+                }
+                Ok(())
+            })
+        })?,
+    )?;
+    audio_t.set(
+        "pause",
+        lua.create_function(|lua, id: u64| {
+            with_state_mut(lua, |st| {
+                require_module(st, "audio")?;
+                if let Some(a) = st.audio.as_mut() {
+                    a.send(crate::audio::AudioMsg::Pause { id });
+                }
+                Ok(())
+            })
+        })?,
+    )?;
+    audio_t.set(
+        "resume",
+        lua.create_function(|lua, id: u64| {
+            with_state_mut(lua, |st| {
+                require_module(st, "audio")?;
+                if let Some(a) = st.audio.as_mut() {
+                    a.send(crate::audio::AudioMsg::Resume { id });
+                }
+                Ok(())
+            })
+        })?,
+    )?;
+    globals.set("audio", audio_t)?;
+
     // ---------------------------------------------------------------- bootstrap
     // `engine.wait` is coroutine-based; `forever` sugar.
     let boot = r#"engine.wait = function(sec) coroutine.yield({"timer", sec or 0}) end"#;
     lua.load(boot).set_name("bootstrap").exec()?;
 
     Ok(())
+}
+
+/// Create-or-update the monitor watching `name` (shared by show/show_list).
+fn monitor_apply(
+    lua: &mlua::Lua,
+    watch: &str,
+    o: Option<mlua::Table>,
+    list: bool,
+) -> Result<(), mlua::Error> {
+    with_state_mut(lua, |st| {
+        let existing = st.scene.monitor_by_watch(watch).cloned();
+        let kind = if list {
+            MonitorKind::List
+        } else {
+            MonitorKind::Variable
+        };
+        let mut m = existing.unwrap_or_else(|| crate::scene::Monitor::new(watch, kind));
+        m.kind = kind;
+        m.visible = true;
+        if let Some(o) = &o {
+            if let Ok(x) = o.get::<f64>("x") {
+                m.x = x as f32;
+            }
+            if let Ok(y) = o.get::<f64>("y") {
+                m.y = y as f32;
+            }
+            if let Ok(l) = o.get::<bool>("large") {
+                m.large = l;
+            }
+            if let Ok(r) = o.get::<f64>("rows") {
+                m.list_rows = (r as usize).clamp(1, 24);
+            }
+        }
+        // Replace any previous monitor watching the same name.
+        st.scene.remove_monitor(watch);
+        st.scene.monitors.push(m);
+        Ok(())
+    })
 }
 
 /// Reject an API call when its owning module is not enabled.

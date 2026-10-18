@@ -3,7 +3,7 @@
 //! The runtime builds a [`Frame`] every tick from the live [`Scene`](crate::scene::Scene)
 //! plus streamed textures, so renderers never touch Lua or the scheduler.
 
-use crate::scene::{Camera, EnvColors, RtQuality, RtScene, SunLight};
+use crate::scene::{Camera, EnvColors, MonitorKind, RtQuality, RtScene, SunLight};
 use std::sync::Arc;
 
 /// Decoded RGBA8 texture, shared between the asset store and renderers.
@@ -78,6 +78,113 @@ pub struct BubbleDraw {
     pub anchor_y: f32,
 }
 
+/// Decoded triangle mesh for 3D model costumes (`.obj` / `.glb` / `.gltf`).
+///
+/// Interleaved `pos3 normal3 uv2` vertices and `u16` indices — the same
+/// layout the wgpu mesh pipeline already consumes, so decoded models upload
+/// straight into both renderers.
+#[derive(Debug, Clone, Default)]
+pub struct ModelData {
+    /// pos3 normal3 uv2, 8 floats per vertex.
+    pub vertices: Vec<f32>,
+    pub indices: Vec<u16>,
+}
+
+impl ModelData {
+    pub const STRIDE: usize = 8;
+
+    pub fn vertex_count(&self) -> usize {
+        self.vertices.len() / Self::STRIDE
+    }
+
+    pub fn index_count(&self) -> usize {
+        self.indices.len()
+    }
+
+    /// Resident-memory estimate used by the streaming LRU budget.
+    pub fn byte_size(&self) -> usize {
+        self.vertices.len() * 4 + self.indices.len() * 2
+    }
+
+    /// Compute smooth per-vertex normals (area-weighted average of adjacent
+    /// faces) — used when a model ships without `vn` records.
+    pub fn compute_normals(&mut self) {
+        let n_verts = self.vertex_count();
+        if n_verts == 0 {
+            return;
+        }
+        let mut acc = vec![0.0f32; n_verts * 3];
+        for tri in self.indices.chunks_exact(3) {
+            let (a, b, c) = (tri[0] as usize, tri[1] as usize, tri[2] as usize);
+            if a >= n_verts || b >= n_verts || c >= n_verts {
+                continue;
+            }
+            let px = |i: usize| (self.vertices[i * Self::STRIDE], self.vertices[i * Self::STRIDE + 1], self.vertices[i * Self::STRIDE + 2]);
+            let (ax, ay, az) = px(a);
+            let (bx, by, bz) = px(b);
+            let (cx, cy, cz) = px(c);
+            let e1 = [bx - ax, by - ay, bz - az];
+            let e2 = [cx - ax, cy - ay, cz - az];
+            let nx = e1[1] * e2[2] - e1[2] * e2[1];
+            let ny = e1[2] * e2[0] - e1[0] * e2[2];
+            let nz = e1[0] * e2[1] - e1[1] * e2[0];
+            for &vi in &[a, b, c] {
+                acc[vi * 3] += nx;
+                acc[vi * 3 + 1] += ny;
+                acc[vi * 3 + 2] += nz;
+            }
+        }
+        for v in 0..n_verts {
+            let (nx, ny, nz) = (acc[v * 3], acc[v * 3 + 1], acc[v * 3 + 2]);
+            let len = (nx * nx + ny * ny + nz * nz).sqrt();
+            let o = v * Self::STRIDE + 3;
+            if len > 1e-9 {
+                self.vertices[o] = nx / len;
+                self.vertices[o + 1] = ny / len;
+                self.vertices[o + 2] = nz / len;
+            } else {
+                self.vertices[o] = 0.0;
+                self.vertices[o + 1] = 1.0;
+                self.vertices[o + 2] = 0.0;
+            }
+        }
+    }
+}
+
+/// A 3D sprite rendered as a real mesh (model costume), both render paths.
+#[derive(Debug, Clone)]
+pub struct ModelDraw {
+    pub model: Arc<ModelData>,
+    pub pos: crate::scene::Vec3,
+    /// Euler rotation in degrees (XYZ order).
+    pub rot: crate::scene::Vec3,
+    pub scale: f32,
+    /// Flat base colour (sprite tint).
+    pub color: [f32; 3],
+    pub alpha: f32,
+    /// When false, back-faces are culled (legacy rasterizer + wgpu).
+    pub two_sided: bool,
+}
+
+/// A Scratch-style monitor snapshot for the overlay layer.
+#[derive(Debug, Clone)]
+pub struct MonitorDraw {
+    pub kind: MonitorKind,
+    pub label: String,
+    /// Variable monitors: formatted value text.
+    pub value: String,
+    /// List monitors: the visible window of items (already sliced).
+    pub items: Vec<String>,
+    /// List monitors: index of the first visible item (0-based, absolute).
+    pub first_index: usize,
+    /// List monitors: total item count.
+    pub total: usize,
+    /// Screen-space top-left corner in pixels.
+    pub x: f32,
+    pub y: f32,
+    pub large: bool,
+}
+
 /// Raytracing parameters for this frame (legacy hybrid path).
 #[derive(Debug, Clone)]
 pub struct RtParams {
@@ -107,6 +214,10 @@ pub struct Frame {
     pub sprites: Vec<SpriteDraw>,
     pub billboards: Vec<BillboardDraw>,
     pub bubbles: Vec<BubbleDraw>,
+    /// 3D model costumes (real meshes, both render paths).
+    pub models: Vec<ModelDraw>,
+    /// Scratch-style monitors (topmost overlay).
+    pub monitors: Vec<MonitorDraw>,
     pub rt: Option<RtParams>,
     /// PBR data (used by the modern wgpu path; ignored by the legacy path).
     pub pbr_camera: Option<Camera>,
@@ -125,6 +236,8 @@ impl Frame {
             sprites: Vec::new(),
             billboards: Vec::new(),
             bubbles: Vec::new(),
+            models: Vec::new(),
+            monitors: Vec::new(),
             rt: None,
             pbr_camera: None,
             pbr_sun: None,

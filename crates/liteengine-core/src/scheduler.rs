@@ -97,7 +97,7 @@ impl Scheduler {
         func: &RegistryKey,
         tasks: &mut Vec<Task>,
         finished_ticks: &mut Vec<usize>,
-        args: Vec<Value>,
+        args: mlua::MultiValue,
         owner: Option<usize>,
         now: f64,
     ) -> mlua::Result<()> {
@@ -139,7 +139,7 @@ impl Scheduler {
                 key,
                 &mut self.tasks,
                 &mut self.finished_ticks,
-                Vec::new(),
+                mlua::MultiValue::new(),
                 None,
                 now,
             ) {
@@ -162,7 +162,7 @@ impl Scheduler {
                 key,
                 &mut self.tasks,
                 &mut self.finished_ticks,
-                Vec::new(),
+                mlua::MultiValue::new(),
                 None,
                 now,
             ) {
@@ -185,7 +185,7 @@ impl Scheduler {
                 key,
                 &mut self.tasks,
                 &mut self.finished_ticks,
-                Vec::new(),
+                mlua::MultiValue::new(),
                 None,
                 now,
             ) {
@@ -204,11 +204,11 @@ impl Scheduler {
                 key,
                 &mut self.tasks,
                 &mut self.finished_ticks,
-                vec![
+                mlua::MultiValue::from_iter(vec![
                     Value::Integer(x as i64),
                     Value::Integer(y as i64),
                     Value::Integer(button as i64),
-                ],
+                ]),
                 None,
                 now,
             ) {
@@ -231,7 +231,7 @@ impl Scheduler {
                 key,
                 &mut self.tasks,
                 &mut self.finished_ticks,
-                Vec::new(),
+                mlua::MultiValue::new(),
                 None,
                 now,
             ) {
@@ -255,7 +255,7 @@ impl Scheduler {
                 key,
                 &mut self.tasks,
                 &mut self.finished_ticks,
-                vec![Value::Number(dt)],
+                mlua::MultiValue::from_iter(vec![Value::Number(dt)]),
                 Some(i),
                 now,
             ) {
@@ -279,7 +279,7 @@ impl Scheduler {
                     continue;
                 }
             };
-            match thread.resume::<Value>(Vec::<Value>::new()) {
+            match thread.resume::<Value>(mlua::MultiValue::new()) {
                 Ok(Value::Nil) => {
                     if let Some(o) = task.owner {
                         self.finished_ticks.push(o);

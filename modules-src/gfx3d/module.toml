@@ -1,6 +1,6 @@
 [module]
 name = "gfx3d"
-version = "1.0.0"
+version = "1.1.0"
 engine_api = "1"
 title = "3D Billboards"
 description = "3D sprite support: in3d billboards with textures on both sides and a perspective camera."

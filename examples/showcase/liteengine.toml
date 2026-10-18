@@ -1,0 +1,25 @@
+# LiteEngine showcase — monitors, 3D model costumes, audio
+[game]
+title = "LiteEngine Showcase 1.1"
+entry = "main.lua"
+width = 960
+height = 540
+fps_cap = 60
+background = "#101624"
+
+[graphics]
+raytracing = false
+window_scale = 1.0
+
+[graphics.rt]
+quality = "medium"
+scale = 0.0
+bounces = 2
+denoise = true
+
+[modules]
+enabled = ["engine-core", "gfx2d", "gfx3d", "speech", "stream", "monitors", "audio"]
+
+[assets]
+budget_mb = 64
+preload = []

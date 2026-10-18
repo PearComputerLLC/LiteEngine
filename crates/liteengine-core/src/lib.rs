@@ -9,11 +9,14 @@
 //! them through the [`host::Host`] trait and the [`snapshot`] frame types.
 
 pub mod assets;
+pub mod audio;
 pub mod device;
 pub mod events;
 pub mod host;
 pub mod luaapi;
+pub mod models;
 pub mod modules;
+pub mod monitors;
 pub mod project;
 pub mod runtime;
 pub mod scheduler;

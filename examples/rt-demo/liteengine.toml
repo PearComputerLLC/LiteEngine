@@ -12,10 +12,10 @@ raytracing = true
 window_scale = 1.0
 
 [graphics.rt]
-quality = "medium"   # low | medium | high
+quality = "high"   # low | medium | high
 scale = 0.0          # 0 = derive from quality tier
 bounces = 2
-denoise = true
+denoise = false
 
 [modules]
 enabled = ["engine-core", "gfx2d", "gfx3d", "speech", "rtmode", "stream"]

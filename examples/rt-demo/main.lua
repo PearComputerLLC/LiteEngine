@@ -16,7 +16,7 @@ engine.on_start(function()
     rt.set_env{ sky_top="#2a5db0", sky_horizon="#bcd8f5", ground="#33302c" }
 
     -- Enable raytracing (the config already did, but this is the runtime API):
-    rt.enable{ quality="medium", denoise=true }
+    rt.enable{ quality="high", denoise=true }
 
     -- A 3D billboard sprite: a 2D texture displayed inside the 3D world,
     -- camera-facing and textured on BOTH sides.
@@ -27,7 +27,7 @@ engine.on_start(function()
     ghost:say("I am a 3D billboard!\nBoth sides textured.", 6)
 
     -- Slow camera orbit.
-    forever(function(dt)
+    engine.forever(function(dt)
         local t = engine.now()
         local a = t * 0.25
         local r = 5.2

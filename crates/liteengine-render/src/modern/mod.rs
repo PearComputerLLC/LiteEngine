@@ -340,6 +340,10 @@ pub struct GpuRenderer {
 
     white_view: wgpu::TextureView,
     meshes: HashMap<String, (wgpu::Buffer, wgpu::Buffer, u32)>,
+    /// GPU uploads of streamed model costumes, keyed by `Arc::as_ptr`.
+    model_meshes: HashMap<usize, (wgpu::Buffer, wgpu::Buffer, u32)>,
+    /// Number of UNIFORM_ALIGN slots currently available in `model_buf`.
+    model_slots: u64,
     /// Cached sprite textures keyed by TextureData identity pointer.
     sprite_binds: HashMap<usize, wgpu::BindGroup>,
     atlas_bind: wgpu::BindGroup,
@@ -988,6 +992,8 @@ impl GpuRenderer {
             cmp_sampler,
             white_view: dummy_view,
             meshes: HashMap::new(),
+            model_meshes: HashMap::new(),
+            model_slots: 64,
             sprite_binds: HashMap::new(),
             atlas_bind,
         })
@@ -1209,29 +1215,48 @@ impl GpuRenderer {
             return (m.0.clone(), m.1.clone(), m.2);
         }
         let data = gen_mesh(kind);
+        let (vbuf, ibuf, count) = self.upload_mesh_data(&data.vertices, &data.indices);
+        self.meshes
+            .insert(kind.to_string(), (vbuf.clone(), ibuf.clone(), count));
+        (vbuf, ibuf, count)
+    }
+
+    /// Upload or fetch a cached GPU mesh for a streamed model costume.
+    fn get_model_mesh(
+        &mut self,
+        model: &std::sync::Arc<liteengine_core::snapshot::ModelData>,
+    ) -> (wgpu::Buffer, wgpu::Buffer, u32) {
+        let key = std::sync::Arc::as_ptr(model) as usize;
+        if let Some(m) = self.model_meshes.get(&key) {
+            return (m.0.clone(), m.1.clone(), m.2);
+        }
+        let (vbuf, ibuf, count) =
+            self.upload_mesh_data(&model.vertices, &model.indices);
+        self.model_meshes.insert(key, (vbuf.clone(), ibuf.clone(), count));
+        (vbuf, ibuf, count)
+    }
+
+    fn upload_mesh_data(&self, vertices: &[f32], indices: &[u16]) -> (wgpu::Buffer, wgpu::Buffer, u32) {
         let vbuf = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("mesh-v"),
-            size: (data.vertices.len() * 4) as u64,
+            size: (vertices.len() * 4) as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         self.queue
-            .write_buffer(&vbuf, 0, f32b(&data.vertices).as_slice());
+            .write_buffer(&vbuf, 0, f32b(vertices).as_slice());
         let ibuf = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("mesh-i"),
-            size: (data.indices.len() * 2).max(4) as u64,
+            size: (indices.len() * 2).max(4) as u64,
             usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let mut ib = Vec::with_capacity(data.indices.len() * 2);
-        for i in &data.indices {
+        let mut ib = Vec::with_capacity(indices.len() * 2);
+        for i in indices {
             ib.extend_from_slice(&i.to_le_bytes());
         }
         self.queue.write_buffer(&ibuf, 0, &ib);
-        let count = data.indices.len() as u32;
-        self.meshes
-            .insert(kind.to_string(), (vbuf.clone(), ibuf.clone(), count));
-        (vbuf, ibuf, count)
+        (vbuf, ibuf, indices.len() as u32)
     }
 
     fn upload_mesh_model(&self, mesh: &liteengine_core::scene::PbrMesh, slot: usize) -> wgpu::BindGroup {
@@ -1370,17 +1395,54 @@ impl Renderer for GpuRenderer {
         let identity = Mat4::IDENTITY.to_bytes();
         self.queue.write_buffer(&self.shadow_model_buf, 0, &identity);
 
-        let meshes: Vec<(wgpu::BindGroup, wgpu::Buffer, wgpu::Buffer, u32)> = frame
-            .pbr_meshes
-            .clone()
-            .into_iter()
-            .enumerate()
-            .map(|(i, mesh)| {
-                let bind = self.upload_mesh_model(&mesh, i);
-                let (vb, ib, count) = self.get_mesh(&mesh.mesh);
-                (bind, vb, ib, count)
-            })
-            .collect();
+        // Per-instance uniforms: grow model_buf when this frame needs more
+        // slots than are currently allocated (pbr meshes + model costumes).
+        let needed = (frame.pbr_meshes.len() + frame.models.len()) as u64;
+        if needed > self.model_slots {
+            let new_slots = (needed * 2).max(64);
+            self.model_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("model"),
+                size: UNIFORM_ALIGN * new_slots,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.model_slots = new_slots;
+        }
+
+        let mut meshes: Vec<(wgpu::BindGroup, wgpu::Buffer, wgpu::Buffer, u32)> = Vec::new();
+        let mut slot = 0usize;
+        for mesh in &frame.pbr_meshes {
+            let builtin = matches!(mesh.mesh.as_str(), "plane" | "cube" | "sphere");
+            if !builtin && mesh.model.is_none() {
+                continue; // still streaming
+            }
+            let bind = self.upload_mesh_model(mesh, slot);
+            let (vb, ib, count) = match &mesh.model {
+                Some(m) => self.get_model_mesh(m),
+                None => self.get_mesh(&mesh.mesh),
+            };
+            meshes.push((bind, vb, ib, count));
+            slot += 1;
+        }
+        // 3D model costumes from sprites render through the same PBR pipe.
+        for md in &frame.models {
+            let synth = liteengine_core::scene::PbrMesh {
+                name: format!("model-costume-{slot}"),
+                mesh: "model".into(),
+                model: None,
+                pos: md.pos,
+                rot: md.rot,
+                scale: Vec3::new(md.scale, md.scale, md.scale),
+                color: md.color,
+                metallic: 0.05,
+                roughness: 0.6,
+                texture: None,
+            };
+            let bind = self.upload_mesh_model(&synth, slot);
+            let (vb, ib, count) = self.get_model_mesh(&md.model);
+            meshes.push((bind, vb, ib, count));
+            slot += 1;
+        }
 
         let mut encoder = self
             .device
@@ -1568,6 +1630,9 @@ impl Renderer for GpuRenderer {
         crate::soft2d::draw_sprites(&mut fb, &frame.sprites);
         for b in &frame.bubbles {
             crate::speech::draw_bubble(&mut fb, b);
+        }
+        for m in &frame.monitors {
+            crate::monitor::draw_monitor(&mut fb, m);
         }
         host.present(&fb.px, fb.w, fb.h)
     }

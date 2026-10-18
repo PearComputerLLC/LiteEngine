@@ -13,9 +13,11 @@
 
 pub mod fb;
 pub mod font;
+pub mod monitor;
 pub mod pathtrace;
 pub mod soft2d;
 pub mod soft3d;
+pub mod softmesh;
 pub mod speech;
 pub mod window;
 
@@ -32,6 +34,8 @@ pub struct SoftRenderer {
     fb: FrameBuf,
     /// Internal-resolution RT accumulator (allocated lazily).
     tracer: PathTracer,
+    /// Depth buffer for 3D model costumes (reused across frames).
+    depth: softmesh::DepthBuf,
     /// Render thread budget: usually `available_parallelism`.
     pub threads: usize,
 }
@@ -44,6 +48,7 @@ impl SoftRenderer {
         SoftRenderer {
             fb: FrameBuf::new(64, 64),
             tracer: PathTracer::new(),
+            depth: softmesh::DepthBuf::new(),
             threads,
         }
     }
@@ -87,12 +92,26 @@ impl Renderer for SoftRenderer {
             .unwrap_or_default();
         soft3d::draw_billboards(&mut self.fb, &frame.billboards, &cam);
 
+        // 3b. 3D model costumes (z-buffered mesh rasterizer).
+        if !frame.models.is_empty() {
+            let light = softmesh::MeshLight::resolve(
+                frame.rt.as_ref().map(|r| r.sun).or(frame.pbr_sun),
+                frame.rt.as_ref().map(|r| r.env).or(frame.pbr_env),
+            );
+            softmesh::draw_models(&mut self.fb, &mut self.depth, &frame.models, &cam, &light);
+        }
+
         // 4. 2D sprites (already sorted by layer by the runtime).
         soft2d::draw_sprites(&mut self.fb, &frame.sprites);
 
         // 5. Speech bubbles.
         for b in &frame.bubbles {
             speech::draw_bubble(&mut self.fb, b);
+        }
+
+        // 6. Scratch-style monitors (topmost overlay).
+        for m in &frame.monitors {
+            monitor::draw_monitor(&mut self.fb, m);
         }
 
         host.present(&self.fb.px, self.fb.w, self.fb.h)

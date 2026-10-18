@@ -61,6 +61,51 @@ impl Vec3 {
     }
 }
 
+/// What a monitor displays: a single value (variable) or a scrolling table
+/// (list). Mirrors the Scratch "variable watcher" / "list watcher" split.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MonitorKind {
+    Variable,
+    List,
+}
+
+/// A Scratch-style on-screen monitor (variable or list watcher).
+///
+/// Monitors **watch a Lua global by name**: the runtime re-reads the global
+/// every frame and formats it, so plain `score = score + 1` updates the
+/// display with no extra API calls — exactly like Scratch.
+#[derive(Debug, Clone)]
+pub struct Monitor {
+    /// Name of the watched Lua global (also shown as the label).
+    pub watch: String,
+    pub kind: MonitorKind,
+    pub visible: bool,
+    /// Stage-space position of the box **top-left** corner
+    /// (centre origin, +y up — same conventions as sprites).
+    pub x: f32,
+    pub y: f32,
+    /// Large readout style: value only, bigger text (Scratch "large" mode).
+    pub large: bool,
+    /// List monitors: first visible index (0-based) and row count.
+    pub list_offset: usize,
+    pub list_rows: usize,
+}
+
+impl Monitor {
+    pub fn new(watch: &str, kind: MonitorKind) -> Monitor {
+        Monitor {
+            watch: watch.to_string(),
+            kind,
+            visible: true,
+            x: 0.0,
+            y: 0.0,
+            large: false,
+            list_offset: 0,
+            list_rows: 8,
+        }
+    }
+}
+
 /// A speech-bubble state attached to a sprite.
 #[derive(Debug, Clone)]
 pub struct SayState {
@@ -103,6 +148,11 @@ pub struct Sprite {
     /// Estimated costume pixel size (set when the texture streams in).
     pub tex_w: u32,
     pub tex_h: u32,
+    /// Optional 3D model costume (`.obj` / `.glb` / `.gltf` asset path).
+    /// When set, the sprite renders as a real mesh instead of a billboard.
+    pub model: Option<String>,
+    /// Euler rotation in degrees applied to the 3D model costume.
+    pub rot3: Vec3,
 }
 
 impl Sprite {
@@ -125,6 +175,8 @@ impl Sprite {
             say: None,
             tex_w: 0,
             tex_h: 0,
+            model: None,
+            rot3: Vec3::ZERO,
         }
     }
 
@@ -299,8 +351,11 @@ impl RtQuality {
 #[derive(Debug, Clone)]
 pub struct PbrMesh {
     pub name: String,
-    /// Built-in generator: "plane" | "cube" | "sphere" (or an .obj path).
+    /// Built-in generator: "plane" | "cube" | "sphere" — or an asset path
+    /// (`.obj` / `.glb`), resolved to [`PbrMesh::model`] when it streams in.
     pub mesh: String,
+    /// Decoded model geometry (filled by the runtime when `mesh` is a path).
+    pub model: Option<std::sync::Arc<crate::snapshot::ModelData>>,
     pub pos: Vec3,
     /// Euler rotation in degrees.
     pub rot: Vec3,
@@ -330,6 +385,9 @@ pub struct Scene {
     pub camera: Camera,
     pub rt: RtScene,
     pub pbr: PbrScene,
+    /// Scratch-style variable/list watchers (rendered by the `monitors`
+    /// module; the vec lives here so it survives module toggles).
+    pub monitors: Vec<Monitor>,
 }
 
 impl Scene {
@@ -354,6 +412,19 @@ impl Scene {
 
     pub fn remove_sprite(&mut self, id: u32) {
         self.sprites.retain(|s| s.id != id);
+    }
+
+    pub fn monitor_by_watch(&self, watch: &str) -> Option<&Monitor> {
+        self.monitors.iter().find(|m| m.watch == watch)
+    }
+
+    pub fn monitor_by_watch_mut(&mut self, watch: &str) -> Option<&mut Monitor> {
+        self.monitors.iter_mut().find(|m| m.watch == watch)
+    }
+
+    /// Remove every monitor watching `watch` (variables and lists alike).
+    pub fn remove_monitor(&mut self, watch: &str) {
+        self.monitors.retain(|m| m.watch != watch);
     }
 }
 

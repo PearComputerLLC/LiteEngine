@@ -8,13 +8,15 @@
 //! ```
 
 use crate::assets::{AssetStore, Vfs};
+use crate::audio::{AudioHandle, AudioMsg};
 use crate::device::DeviceInfo;
 use crate::events::InputEvent;
 use crate::host::{Host, Renderer};
 use crate::modules::ModuleManager;
+use crate::monitors::{format_value, read_list};
 use crate::project::ProjectConfig;
 use crate::scheduler::Scheduler;
-use crate::scene::{parse_color, Camera, Scene};
+use crate::scene::{parse_color, Camera, MonitorKind, Scene};
 use crate::snapshot::*;
 use crate::EngineResult;
 use mlua::{Lua, Value};
@@ -52,6 +54,9 @@ pub struct EngineState {
     pub pending_handlers: Vec<(String, Option<String>, mlua::RegistryKey)>,
     /// Broadcasts queued from Lua, dispatched by the loop.
     pub pending_broadcasts: Vec<String>,
+    /// Audio playback handle (None until the engine boots; stubbed without
+    /// an output device).
+    pub audio: Option<AudioHandle>,
     /// Parked-coroutine count from the last scheduler update.
     pub debug_pending: usize,
 }
@@ -98,7 +103,10 @@ impl Engine {
         modules.provide_native("gfx2d.sprites");
         modules.provide_native("gfx3d.billboards");
         modules.provide_native("ui.speech");
+        modules.provide_native("ui.monitors");
         modules.provide_native("assets.stream");
+        modules.provide_native("models.import");
+        modules.provide_native("audio.playback");
         modules.provide_native("rt.toggle");
         if device.path == crate::device::GpuPath::ModernWgpu {
             modules.provide_native("pbr3d.renderer");
@@ -116,6 +124,8 @@ impl Engine {
             },
             ..Default::default()
         };
+
+        let audio = AudioHandle::open();
 
         let state = EngineState {
             rt_quality: crate::scene::RtQuality::parse(&config.rt.quality),
@@ -135,6 +145,7 @@ impl Engine {
             tex_sizes: std::cell::RefCell::new(std::collections::HashMap::new()),
             pending_handlers: Vec::new(),
             pending_broadcasts: Vec::new(),
+            audio: Some(audio),
             debug_pending: 0,
             config,
             device,
@@ -393,6 +404,9 @@ impl Engine {
             }
         }
         self.sched.clear(&self.lua);
+        if let Some(a) = self.shared.borrow_mut().audio.as_mut() {
+            a.send(AudioMsg::Shutdown);
+        }
         Ok(())
     }
 
@@ -490,7 +504,7 @@ impl Engine {
         }
 
         // 3D billboards (2D costumes displayed in the 3D world).
-        for s in sprites.iter().filter(|s| s.visible && s.in3d) {
+        for s in sprites.iter().filter(|s| s.visible && s.in3d && s.model.is_none()) {
             let texture = s.costume.as_deref().and_then(|c| st.assets.get(c));
             let placeholder = texture.is_none() && s.costume.is_some();
             let (tw, th) = match &texture {
@@ -509,6 +523,24 @@ impl Engine {
                 both_sides: s.billboard_both_sides,
                 placeholder,
             });
+        }
+
+        // 3D model costumes (real meshes; both render paths consume these).
+        for s in sprites.iter().filter(|s| s.visible && s.in3d && s.model.is_some()) {
+            let path = s.model.clone().unwrap();
+            if let Some(model) = st.assets.get_model(&path) {
+                frame.models.push(ModelDraw {
+                    model,
+                    pos: s.pos3,
+                    rot: s.rot3,
+                    scale: s.size / 100.0,
+                    color: s.tint,
+                    alpha: s.alpha,
+                    two_sided: s.billboard_both_sides,
+                });
+            } else {
+                st.assets.request(&path, 5);
+            }
         }
 
         // Speech bubbles anchored top-right of each sprite.
@@ -570,12 +602,105 @@ impl Engine {
         frame.pbr_sun = st.scene.pbr.sun;
         frame.pbr_env = st.scene.pbr.env;
         frame.pbr_meshes = st.scene.pbr.meshes.clone();
+        // Resolve `pbr3d.add {mesh = "path"}` model references to decoded
+        // geometry (built-in generators pass through untouched).
+        for m in frame.pbr_meshes.iter_mut() {
+            if matches!(m.mesh.as_str(), "plane" | "cube" | "sphere") {
+                continue;
+            }
+            if let Some(model) = st.assets.get_model(&m.mesh) {
+                m.model = Some(model);
+            } else {
+                st.assets.request(&m.mesh, 4);
+            }
+        }
+
+        // Scratch-style monitors: re-read the watched globals each frame and
+        // project their stage-space top-left into screen pixels.
+        if st.modules.is_enabled("monitors") {
+            let slot_h = 44.0f32;
+            for (i, m) in st
+                .scene
+                .monitors
+                .iter()
+                .filter(|m| m.visible)
+                .enumerate()
+            {
+                let (x, y) = if m.x == 0.0 && m.y == 0.0 {
+                    // Auto-stacked down the left edge, under the last monitor.
+                    (14.0, 14.0 + i as f32 * slot_h)
+                } else {
+                    (w as f32 * 0.5 + m.x, h as f32 * 0.5 - m.y)
+                };
+                let value = self.lua.globals().raw_get::<Value>(m.watch.as_str()).ok();
+                let draw = match m.kind {
+                    MonitorKind::Variable => {
+                        let text = value
+                            .as_ref()
+                            .map(format_value)
+                            .unwrap_or_default();
+                        MonitorDraw {
+                            kind: MonitorKind::Variable,
+                            label: m.watch.clone(),
+                            value: text,
+                            items: Vec::new(),
+                            first_index: 0,
+                            total: 0,
+                            x,
+                            y,
+                            large: m.large,
+                        }
+                    }
+                    MonitorKind::List => {
+                        let (items, total) = read_list(
+            &self.lua,
+            &m.watch,
+            m.list_offset + m.list_rows.max(1) + 1,
+        );
+                        MonitorDraw {
+                            kind: MonitorKind::List,
+                            label: m.watch.clone(),
+                            value: String::new(),
+                            items,
+                            first_index: m.list_offset,
+                            total,
+                            x,
+                            y,
+                            large: m.large,
+                        }
+                    }
+                };
+                frame.monitors.push(draw);
+            }
+            // Apply the list scroll window now that totals are known.
+            for d in frame.monitors.iter_mut() {
+                if d.kind == MonitorKind::List {
+                    if let Some(m) = st.scene.monitor_by_watch(&d.label) {
+                        let rows = m.list_rows.max(1);
+                        let start = m.list_offset.min(d.total.saturating_sub(1));
+                        let lo = start.min(d.items.len());
+                        let hi = (start + rows).min(d.items.len());
+                        d.items = d.items[lo..hi].to_vec();
+                    }
+                }
+            }
+        }
         frame
     }
 }
 
 /// Global quiet flag used by error reporting (set from LITEENGINE_QUIET).
 pub static QUIET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Warn once when audio.play() is called without an output device.
+pub fn warn_audio_unavailable() {
+    use std::sync::atomic::Ordering;
+    if AUDIO_WARNED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    eprintln!("[liteengine] audio: no output device — audio.play() calls are ignored");
+}
+static AUDIO_WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Engine self-test used by `liteengine doctor`: boots a Lua VM, registers
 /// the API and runs a probe script exercising the scheduler end-to-end.
@@ -589,7 +714,19 @@ pub fn self_test() -> Result<(), String> {
         crate::assets::Vfs::Dir(std::env::temp_dir()),
         32 * 1024 * 1024,
     );
-    let modules = crate::modules::ModuleManager::new().map_err(|e| e.to_string())?;
+    let mut modules = crate::modules::ModuleManager::new().map_err(|e| e.to_string())?;
+    // The probe enables modules: declare the compiled-in features it needs.
+    modules.provide_native("core.events");
+    modules.provide_native("core.stage");
+    modules.provide_native("gfx2d.sprites");
+    modules.provide_native("gfx3d.billboards");
+    modules.provide_native("ui.speech");
+    modules.provide_native("ui.monitors");
+    modules.provide_native("assets.stream");
+    modules.provide_native("models.import");
+    modules.provide_native("audio.playback");
+    modules.provide_native("rt.toggle");
+    modules.provide_native("pbr3d.renderer");
     let host: Box<dyn Host> = Box::new(ProbeHost);
     let state = EngineState {
         rt_quality: crate::scene::RtQuality::Medium,
@@ -605,6 +742,7 @@ pub fn self_test() -> Result<(), String> {
         tex_sizes: std::cell::RefCell::new(std::collections::HashMap::new()),
         pending_handlers: Vec::new(),
         pending_broadcasts: Vec::new(),
+        audio: Some(crate::audio::AudioHandle::open()),
         debug_pending: 0,
         config: ProjectConfig::default(),
         device,
@@ -618,15 +756,52 @@ pub fn self_test() -> Result<(), String> {
     };
     let rc: crate::luaapi::StateRc = Rc::new(RefCell::new(state));
     lua.set_app_data::<crate::luaapi::StateRc>(rc);
+    // A tiny valid WAV so the audio probe can exercise a real play().
+    let wav: Vec<u8> = {
+        let mut b = Vec::new();
+        b.extend_from_slice(b"RIFF");
+        b.extend_from_slice(&38u32.to_le_bytes());
+        b.extend_from_slice(b"WAVEfmt ");
+        b.extend_from_slice(&16u32.to_le_bytes());
+        b.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        b.extend_from_slice(&1u16.to_le_bytes()); // mono
+        b.extend_from_slice(&22050u32.to_le_bytes());
+        b.extend_from_slice(&44100u32.to_le_bytes());
+        b.extend_from_slice(&2u16.to_le_bytes());
+        b.extend_from_slice(&16u16.to_le_bytes());
+        b.extend_from_slice(b"data");
+        b.extend_from_slice(&2u32.to_le_bytes());
+        b.extend_from_slice(&0i16.to_le_bytes());
+        b
+    };
+    let _ = std::fs::write(std::env::temp_dir().join("liteengine-probe.wav"), &wav);
     lua.load(
         r##"
         local s = Sprite.new("probe", nil)
         s:go_to(1, 2)
         s:say("ok", 1)
+        s:set_model("assets/none.obj")
+        s:clear_model()
+        s:set_rotation3d(10, 20, 30)
+        local rx, ry, rz = s:rotation3d()
+        assert(rx == 10 and ry == 20 and rz == 30)
         engine.set_background("#101010")
         local dev = engine.device()
         assert(dev.os ~= nil)
         assert(s:id() >= 0)
+        -- monitors + audio modules enable & call cleanly.
+        engine.enable_module("monitors")
+        engine.enable_module("audio")
+        local high = 7
+        monitors.show("high")
+        monitors.show_list("items")
+        monitors.hide("high")
+        monitors.set_list_window("items", 0, 4)
+        monitors.hide_all()
+        assert(type(audio.available()) == "boolean")
+        local sid = audio.play("liteengine-probe.wav")
+        assert(sid >= 1)
+        audio.stop_all()
         "##,
     )
     .exec()

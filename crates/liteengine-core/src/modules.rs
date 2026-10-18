@@ -85,31 +85,39 @@ impl ModuleManager {
         vec![
             (
                 "engine-core",
-                include_bytes!("../builtin/engine-core-1.0.0.lemodule") as &'static [u8],
+                include_bytes!("../builtin/engine-core-1.1.0.lemodule") as &'static [u8],
             ),
             (
                 "gfx2d",
-                include_bytes!("../builtin/gfx2d-1.0.0.lemodule") as &'static [u8],
+                include_bytes!("../builtin/gfx2d-1.1.0.lemodule") as &'static [u8],
             ),
             (
                 "gfx3d",
-                include_bytes!("../builtin/gfx3d-1.0.0.lemodule") as &'static [u8],
+                include_bytes!("../builtin/gfx3d-1.1.0.lemodule") as &'static [u8],
             ),
             (
                 "speech",
-                include_bytes!("../builtin/speech-1.0.0.lemodule") as &'static [u8],
+                include_bytes!("../builtin/speech-1.1.0.lemodule") as &'static [u8],
             ),
             (
                 "rtmode",
-                include_bytes!("../builtin/rtmode-1.0.0.lemodule") as &'static [u8],
+                include_bytes!("../builtin/rtmode-1.1.0.lemodule") as &'static [u8],
             ),
             (
                 "stream",
-                include_bytes!("../builtin/stream-1.0.0.lemodule") as &'static [u8],
+                include_bytes!("../builtin/stream-1.1.0.lemodule") as &'static [u8],
             ),
             (
                 "pbr3d",
-                include_bytes!("../builtin/pbr3d-1.0.0.lemodule") as &'static [u8],
+                include_bytes!("../builtin/pbr3d-1.1.0.lemodule") as &'static [u8],
+            ),
+            (
+                "monitors",
+                include_bytes!("../builtin/monitors-1.1.0.lemodule") as &'static [u8],
+            ),
+            (
+                "audio",
+                include_bytes!("../builtin/audio-1.1.0.lemodule") as &'static [u8],
             ),
         ]
     }

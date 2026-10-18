@@ -814,13 +814,13 @@ fn cmd_doctor() -> ExitCode {
     // Built-in module registry loads?
     let mods_ok = liteengine_core::modules::ModuleManager::new()
         .map(|m| {
-            m.warnings.is_empty() && m.installed.len() >= 7
+            m.warnings.is_empty() && m.installed.len() >= 9
         })
         .unwrap_or(false);
     check(
         "module registry",
         mods_ok,
-        "7 built-in .lemodule archives must load",
+        "9 built-in .lemodule archives must load",
     );
 
     // PNG decode?
@@ -1011,6 +1011,9 @@ fn fill_native_features(m: &mut liteengine_core::modules::ModuleManager) {
         "gfx2d.sprites",
         "gfx3d.billboards",
         "ui.speech",
+        "ui.monitors",
+        "models.import",
+        "audio.playback",
         "assets.stream",
         "rt.toggle",
     ] {
