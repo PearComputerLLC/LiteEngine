@@ -1,0 +1,8 @@
+[module]
+name = "rtmode"
+version = "1.0.0"
+engine_api = "1"
+title = "Raytracing Mode"
+description = "Toggleable raytracing: hybrid software path tracing on legacy devices, screen-space RT effects on wgpu. Includes rt.add_sphere/add_plane/set_sun/set_env."
+provides = "rt"
+native = ["rt.toggle"]

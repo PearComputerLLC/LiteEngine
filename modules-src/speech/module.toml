@@ -1,0 +1,8 @@
+[module]
+name = "speech"
+version = "1.0.0"
+engine_api = "1"
+title = "Speech Bubbles"
+description = "say()/think() speech-bubble billboards anchored to the top-right of any 2D or 3D sprite."
+provides = ""
+native = ["ui.speech"]

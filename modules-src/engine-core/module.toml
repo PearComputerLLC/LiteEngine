@@ -1,0 +1,8 @@
+[module]
+name = "engine-core"
+version = "1.0.0"
+engine_api = "1"
+title = "Engine Core"
+description = "Green-flag events, key/click input, broadcasts, timing, stage background and logging."
+provides = "engine"
+native = ["core.events", "core.stage"]

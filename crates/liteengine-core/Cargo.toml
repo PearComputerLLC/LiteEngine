@@ -1,0 +1,17 @@
+[package]
+name = "liteengine-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description.workspace = true
+
+[dependencies]
+mlua = { workspace = true }
+image = { workspace = true }
+zip = { workspace = true }
+toml = { workspace = true }
+serde = { workspace = true }
+
+[lib]
+name = "liteengine_core"
+path = "src/lib.rs"

@@ -1,0 +1,18 @@
+[package]
+name = "liteengine-render"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "LiteEngine rendering: software rasterizer, hybrid path tracer, wgpu PBR path, window hosts"
+
+[dependencies]
+liteengine-core = { path = "../liteengine-core" }
+image = { workspace = true }
+minifb = { workspace = true, optional = true }
+wgpu = { workspace = true, optional = true }
+pollster = { workspace = true, optional = true }
+
+[features]
+default = ["window"]
+window = ["dep:minifb"]
+modern = ["dep:wgpu", "dep:pollster"]

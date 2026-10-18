@@ -1,0 +1,21 @@
+[package]
+name = "liteengine-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The liteengine command-line utility: project manager, game runner and packager"
+
+[[bin]]
+name = "liteengine"
+path = "src/main.rs"
+
+[dependencies]
+liteengine-core = { path = "../liteengine-core" }
+liteengine-render = { path = "../liteengine-render" }
+zip = { workspace = true }
+toml = { workspace = true }
+
+[features]
+default = ["window"]
+window = ["liteengine-render/window"]
+modern = ["liteengine-render/modern"]

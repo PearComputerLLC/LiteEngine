@@ -1,0 +1,25 @@
+# LiteEngine project manifest — Raytracing demo
+[game]
+title = "LiteEngine RT Demo"
+entry = "main.lua"
+width = 960
+height = 540
+fps_cap = 60
+background = "#1b2a41"
+
+[graphics]
+raytracing = true
+window_scale = 1.0
+
+[graphics.rt]
+quality = "medium"   # low | medium | high
+scale = 0.0          # 0 = derive from quality tier
+bounces = 2
+denoise = true
+
+[modules]
+enabled = ["engine-core", "gfx2d", "gfx3d", "speech", "rtmode", "stream"]
+
+[assets]
+budget_mb = 64
+preload = ["assets/ball.png"]

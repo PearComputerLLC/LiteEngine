@@ -1,0 +1,8 @@
+[module]
+name = "stream"
+version = "1.0.0"
+engine_api = "1"
+title = "Streaming Assets"
+description = "Budgeted streaming asset system with LRU eviction: stream.load/prefetch/release/stats."
+provides = "stream"
+native = ["assets.stream"]

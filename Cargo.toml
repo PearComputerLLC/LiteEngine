@@ -1,0 +1,29 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/liteengine-core",
+    "crates/liteengine-render",
+    "crates/liteengine-cli",
+]
+
+[workspace.package]
+version = "1.0.0"
+edition = "2021"
+license = "MIT"
+description = "LiteEngine - a lightweight, modular, Lua-scripted game engine with Scratch-like APIs and hybrid raytracing"
+
+[workspace.dependencies]
+mlua = { version = "0.10", features = ["lua54", "vendored"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+zip = { version = "2.4", default-features = false, features = ["deflate"] }
+toml = "0.8"
+serde = { version = "1", features = ["derive"] }
+minifb = "0.29"
+wgpu = "24"
+pollster = "0.4"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true

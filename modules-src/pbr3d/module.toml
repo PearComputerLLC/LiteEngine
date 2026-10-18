@@ -1,0 +1,8 @@
+[module]
+name = "pbr3d"
+version = "1.0.0"
+engine_api = "1"
+title = "PBR 3D (wgpu)"
+description = "PBR mesh rendering with shadow maps and IBL-style ambience on the modern wgpu path (Apple Silicon, Win10+, 64-bit Linux)."
+provides = "pbr3d"
+native = ["pbr3d.renderer"]

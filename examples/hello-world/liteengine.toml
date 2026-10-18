@@ -1,0 +1,25 @@
+# LiteEngine project manifest — Hello World
+[game]
+title = "Hello LiteEngine"
+entry = "main.lua"
+width = 960
+height = 540
+fps_cap = 60
+background = "assets/sky.png"
+
+[graphics]
+raytracing = false
+window_scale = 1.0
+
+[graphics.rt]
+quality = "medium"
+scale = 0.0
+bounces = 2
+denoise = true
+
+[modules]
+enabled = ["engine-core", "gfx2d", "speech", "stream"]
+
+[assets]
+budget_mb = 64
+preload = []

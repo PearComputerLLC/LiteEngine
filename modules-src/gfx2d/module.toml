@@ -1,0 +1,8 @@
+[module]
+name = "gfx2d"
+version = "1.0.0"
+engine_api = "1"
+title = "2D Graphics"
+description = "2D sprites: motion, looks, layers, costumes, rotation, alpha and sensing."
+provides = "Sprite"
+native = ["gfx2d.sprites"]
